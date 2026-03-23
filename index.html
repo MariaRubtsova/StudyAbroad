@@ -384,7 +384,76 @@
 
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
+  function App() {
+  const [step, setStep] = React.useState("start");
+  const [filters, setFilters] = React.useState({});
+  const [allUnis, setAllUnis] = React.useState([]); //вузы из JSON
+  const [results, setResults] = React.useState([]); //светлое отфильтрованное
 
+  //загружаем базу
+  React.useEffect(() => {
+    fetch('universities.json')
+      .then(response => response.json())
+      .then(data => setAllUnis(data))
+      .catch(err => console.error("Ошибка загрузки базы:", err));
+  }, []);
+
+  const nextStep = (key, val, next) => {
+    const newFilters = { ...filters, [key]: val };
+    setFilters(newFilters);
+    
+    if (next === "results") {
+      //логика фильтра
+      const filtered = allUnis.filter(u => {
+        const matchField = u.fields.includes(newFilters.field);
+        const matchCountry = newFilters.country === "Любая страна"  u.country === newFilters.country;
+        const matchIelts = u.ielts_min <= (parseFloat(newFilters.ielts)  0);
+        const matchGpa = u.gpa_min <= (parseFloat(newFilters.gpa) || 0);
+        
+        let matchBudget = true;
+        if (newFilters.budget === "Бесплатно") matchBudget = u.tuition_usd === 0;
+        else if (newFilters.budget === "до $5000") matchBudget = u.tuition_usd <= 5000;
+        else if (newFilters.budget === "до $15000") matchBudget = u.tuition_usd <= 15000;
+        else if (newFilters.budget === "до $30000") matchBudget = u.tuition_usd <= 30000;
+
+        return matchField && matchCountry && matchIelts && matchGpa && matchBudget;
+      });
+      
+      setResults(filtered);
+      setStep("results");
+    } else {
+      setStep(next);
+    }
+  };
+
+  //отображение карточек 
+  return (
+    <div className="container">
+      {/* ... ваши предыдущие шаги (start, field, country и т.д.) ... */}
+
+      {step === "results" && (
+        <div className="results-container">
+          <h2>Найдено вариантов: {results.length}</h2>
+          {results.length > 0 ? (
+            results.map((uni, i) => (
+              <div className="uni-card" key={i}>
+                <div className="uni-name">{uni.name}</div>
+                <div className="uni-badges">
+                  <span className="badge">📍 {uni.city}, {uni.country}</span>
+                  <span className="badge">💰 {uni.tuition_usd === 0 ? "Бесплатно" : $${uni.tuition_usd}/год}</span>
+                </div>
+                <a href={uni.url} target="_blank" className="uni-link">Сайт вуза ↗️</a>
+              </div>
+            ))
+          ) : (
+            <p>Попробуйте смягчить фильтры.</p>
+          )}
+          <button className="btn" onClick={() => setStep("start")}>Начать заново</button>
+        </div>
+      )}
+    </div>
+  );
+}
 const tg = window.Telegram?.WebApp;
 if (tg) {
   tg.ready();
