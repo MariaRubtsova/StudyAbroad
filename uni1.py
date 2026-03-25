@@ -1,61 +1,72 @@
-import json
+import sqlite3
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, WebAppInfo
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, ContextTypes, filters
 )
-
+ 
 logging.basicConfig(level=logging.INFO)
-
+ 
 BOT_TOKEN = "8601897406:AAHvq31880IRCgeEx2CZBp1kdwbHfEpul4I"
 MINI_APP_URL = "https://mariarubtsova.github.io/StudyAbroad/"
-
+DB_PATH = "universities.db"
+ 
 STEP_FIELD, STEP_COUNTRY, STEP_IELTS, STEP_GPA, STEP_BUDGET = range(5)
-
-FIELDS = ["Computer Science", "Medicine", "Economics", "Engineering", "Law", "Business"]
-COUNTRIES = ["Germany", "Czech Republic", "Hungary", "Austria", "Netherlands", "Finland", "Canada", "Australia", "Любая страна"]
-BUDGETS = ["Бесплатно", "до $5000", "до $15000", "до $30000", "Любой"]
-
-
-#загрузка базы вузов ебучих
-
-def load_universities():
-    try:
-        with open("universities.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
-
-UNIS = load_universities()
-
-
+ 
+FIELDS    = ["Компьютерные науки", "Медицина", "Экономика", "Инженерия", "Юриспруденция", "Бизнес"]
+COUNTRIES = ["Германия", "Чехия", "Венгрия", "Австрия", "Нидерланды", "Финляндия", "Канада", "Австралия", "Любая страна"]
+BUDGETS   = ["Бесплатно", "до $5000", "до $15000", "до $30000", "Любой"]
+ 
+ 
+#загрузка базы вузов с SQL(теперь оно sql запросы фигачит)
+ 
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+ 
+ 
 #фильтр
-
+ 
 def find_unis(field, country, ielts, gpa, budget_max):
-    result = []
-    for uni in UNIS:
-        if field not in uni.get("fields", []):
-            continue
-        if country != "Любая страна" and country != uni.get("country"):
-            continue
-        if ielts < uni.get("ielts_min", 0):
-            continue
-        if gpa < uni.get("gpa_min", 0):
-            continue
-        if budget_max is not None and uni.get("tuition_usd", 0) > budget_max:
-            continue
-        result.append(uni)
-    return result
-
-
+    conn = get_conn()
+    cur = conn.cursor()
+ 
+    query = """
+        SELECT DISTINCT u.name, c.name AS country, u.city,
+               u.ielts_min, u.gpa_min, u.tuition_usd, u.scholarship, u.url
+        FROM universities u
+        JOIN countries c ON u.country_id = c.id
+        JOIN university_fields uf ON uf.university_id = u.id
+        JOIN fields f ON f.id = uf.field_id
+        WHERE f.name = ?
+          AND u.ielts_min <= ?
+          AND u.gpa_min   <= ?
+    """
+    params = [field, ielts, gpa]
+ 
+    if country != "Любая страна":
+        query += " AND c.name = ?"
+        params.append(country)
+ 
+    if budget_max is not None:
+        query += " AND u.tuition_usd <= ?"
+        params.append(budget_max)
+ 
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+ 
+ 
 #helpers 
-
+ 
 def make_keyboard(options):
     buttons = [InlineKeyboardButton(o, callback_data=o) for o in options]
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(rows)
-
+ 
 def budget_to_number(label):
     mapping = {
         "Бесплатно": 0,
@@ -65,9 +76,9 @@ def budget_to_number(label):
         "Любой": None
     }
     return mapping.get(label)
-
+ 
 def uni_card(uni):
-    cost = "Бесплатно" if uni["tuition_usd"] == 0 else f"${uni['tuition_usd']}/год"
+    cost  = "Бесплатно" if uni["tuition_usd"] == 0 else f"${uni['tuition_usd']}/год"
     grant = "✅ Есть стипендии" if uni["scholarship"] else "❌ Стипендий нет"
     return (
         f"🏛 *{uni['name']}*\n"
@@ -77,10 +88,10 @@ def uni_card(uni):
         f"{grant}\n"
         f"🔗 {uni['url']}"
     )
-
-
+ 
+ 
 #обработчики 
-
+ 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     btn = KeyboardButton(
@@ -92,39 +103,25 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Привет! Нажми кнопку ниже чтобы найти университет 👇",
         reply_markup=markup
     )
-
-async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    data = json.loads(update.message.web_app_data.data)
-    unis_names = data.get("unis", [])
-
-    if not unis_names:
-        await update.message.reply_text("😔 По твоим параметрам ничего не нашлось.")
-        return
-
-    await update.message.reply_text(f"🎉 Нашла {len(unis_names)} вариантов:")
-    for name in unis_names[:10]:
-        uni = next((u for u in UNIS if u["name"] == name), None)
-        if uni:
-            await update.message.reply_text(uni_card(uni), parse_mode="Markdown")
-
+ 
 async def start_classic(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Шаг 1 — выбери направление:", reply_markup=make_keyboard(FIELDS))
     return STEP_FIELD
-
+ 
 async def step_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     ctx.user_data["field"] = query.data
     await query.edit_message_text(f"✅ {query.data}\n\nШаг 2 — выбери страну:", reply_markup=make_keyboard(COUNTRIES))
     return STEP_COUNTRY
-
+ 
 async def step_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     ctx.user_data["country"] = query.data
     await query.edit_message_text(f"✅ {query.data}\n\nШаг 3 — введи IELTS (например 6.5):")
     return STEP_IELTS
-
+ 
 async def step_ielts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         val = float(update.message.text.replace(',', '.'))
@@ -135,7 +132,7 @@ async def step_ielts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["ielts"] = val
     await update.message.reply_text("Шаг 4 — введи GPA (от 0 до 4, например 3.5):")
     return STEP_GPA
-
+ 
 async def step_gpa(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         val = float(update.message.text.replace(',', '.'))
@@ -146,38 +143,36 @@ async def step_gpa(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["gpa"] = val
     await update.message.reply_text("Шаг 5 — бюджет:", reply_markup=make_keyboard(BUDGETS))
     return STEP_BUDGET
-
+ 
 async def step_budget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+ 
     budget_max = budget_to_number(query.data)
     d = ctx.user_data
     results = find_unis(d.get("field"), d.get("country"), d.get("ielts", 0), d.get("gpa", 0), budget_max)
-
+ 
     await query.edit_message_text(f"🎉 Нашла {len(results)} вариантов:")
-
     for uni in results[:10]:
         await ctx.bot.send_message(
-            chat_id=update.effective_chat.id, 
-            text=uni_card(uni), 
+            chat_id=update.effective_chat.id,
+            text=uni_card(uni),
             parse_mode="Markdown"
         )
     return ConversationHandler.END
-
+ 
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отменила. Напиши /start заново.")
     return ConversationHandler.END
-
-
+ 
+ 
 #пуск 
-
+ 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
+ 
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
-
+ 
     conv = ConversationHandler(
         entry_points=[CommandHandler("classic", start_classic)],
         states={
@@ -189,9 +184,10 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)]
     )
-
+ 
     app.add_handler(conv)
     app.run_polling()
-
+ 
 if __name__ == "__main__":
     main()
+ 
